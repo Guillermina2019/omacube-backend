@@ -1,42 +1,47 @@
 const express = require("express");
-const Database = require("better-sqlite3");
 const cors = require("cors");
+const fs = require("fs");
 const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const DB_FILE = path.join(__dirname, "db.json");
+const ADMIN_KEY = process.env.ADMIN_KEY || "omacube2025";
 
-// Base de datos SQLite
-const db = new Database(path.join(__dirname, "inscriptos.db"));
+// Inicializar archivo de base de datos si no existe
+if (!fs.existsSync(DB_FILE)) {
+  fs.writeFileSync(DB_FILE, JSON.stringify({ inscriptos: [] }, null, 2));
+}
 
-// Crear tabla si no existe
-db.exec(`
-  CREATE TABLE IF NOT EXISTS inscriptos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre TEXT NOT NULL,
-    dni TEXT NOT NULL,
-    nivel TEXT NOT NULL,
-    escuela TEXT NOT NULL,
-    fecha TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+function readDB() {
+  try {
+    return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+  } catch {
+    return { inscriptos: [] };
+  }
+}
 
-// Middlewares
+function writeDB(data) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
+
 app.use(cors());
 app.use(express.json());
 
-// ── GET /inscriptos — listar todos
+// Health check
+app.get("/", (req, res) => res.json({ ok: true, msg: "OMA Cube API funcionando" }));
+
+// GET /inscriptos
 app.get("/inscriptos", (req, res) => {
   try {
-    const rows = db.prepare("SELECT * FROM inscriptos ORDER BY created_at DESC").all();
-    res.json({ ok: true, data: rows });
+    const db = readDB();
+    res.json({ ok: true, data: db.inscriptos });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ── POST /inscriptos — agregar nuevo
+// POST /inscriptos
 app.post("/inscriptos", (req, res) => {
   try {
     const { nombre, dni, nivel, escuela } = req.body;
@@ -44,46 +49,57 @@ app.post("/inscriptos", (req, res) => {
       return res.status(400).json({ ok: false, error: "Faltan campos obligatorios" });
     }
 
-    // Verificar DNI duplicado
-    const existe = db.prepare("SELECT id FROM inscriptos WHERE dni = ?").get(dni);
+    const db = readDB();
+
+    const existe = db.inscriptos.find(i => i.dni === String(dni));
     if (existe) {
       return res.status(409).json({ ok: false, error: "Ya existe un inscripto con ese DNI" });
     }
 
-    const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-    const result = db.prepare(
-      "INSERT INTO inscriptos (nombre, dni, nivel, escuela, fecha) VALUES (?, ?, ?, ?, ?)"
-    ).run(nombre, dni, nivel, escuela, fecha);
+    const nuevo = {
+      id: Date.now(),
+      nombre,
+      dni: String(dni),
+      nivel,
+      escuela,
+      fecha: new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })
+    };
 
-    res.json({ ok: true, id: result.lastInsertRowid, fecha });
+    db.inscriptos.push(nuevo);
+    writeDB(db);
+
+    res.json({ ok: true, id: nuevo.id, fecha: nuevo.fecha });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ── DELETE /inscriptos — borrar todos
+// DELETE /inscriptos
 app.delete("/inscriptos", (req, res) => {
   const { clave } = req.body;
-  if (clave !== process.env.ADMIN_KEY) {
+  if (clave !== ADMIN_KEY) {
     return res.status(403).json({ ok: false, error: "Clave incorrecta" });
   }
   try {
-    db.prepare("DELETE FROM inscriptos").run();
+    writeDB({ inscriptos: [] });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ── GET /stats — estadísticas rápidas
+// GET /stats
 app.get("/stats", (req, res) => {
   try {
-    const total    = db.prepare("SELECT COUNT(*) as n FROM inscriptos").get().n;
-    const infantil = db.prepare("SELECT COUNT(*) as n FROM inscriptos WHERE nivel = 'Infantil'").get().n;
-    const n1       = db.prepare("SELECT COUNT(*) as n FROM inscriptos WHERE nivel = '1° Nivel'").get().n;
-    const n2       = db.prepare("SELECT COUNT(*) as n FROM inscriptos WHERE nivel = '2° Nivel'").get().n;
-    const n3       = db.prepare("SELECT COUNT(*) as n FROM inscriptos WHERE nivel = '3° Nivel'").get().n;
-    res.json({ ok: true, total, infantil, n1, n2, n3 });
+    const arr = readDB().inscriptos;
+    res.json({
+      ok: true,
+      total:    arr.length,
+      infantil: arr.filter(i => i.nivel === "Infantil").length,
+      n1:       arr.filter(i => i.nivel === "1° Nivel").length,
+      n2:       arr.filter(i => i.nivel === "2° Nivel").length,
+      n3:       arr.filter(i => i.nivel === "3° Nivel").length,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
